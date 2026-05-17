@@ -18,7 +18,10 @@ public sealed class UpdateProductVariantCommandHandler
     {
         var variant = await _context.ProductVariants
             .FirstOrDefaultAsync(
-                x => x.Id == request.VariantId && x.ProductId == request.ProductId,
+                x =>
+                    x.Id == request.VariantId &&
+                    x.ProductId == request.ProductId &&
+                    !x.IsDeleted,
                 cancellationToken);
 
         if (variant is null)
@@ -27,22 +30,22 @@ public sealed class UpdateProductVariantCommandHandler
         }
 
         var normalizedOptions = request.Options
-     .Select(x => new
-     {
-         x.OptionId,
-         Value = x.Value.Trim()
-     })
-     .ToList();
+            .Select(x => new
+            {
+                x.OptionId,
+                Value = x.Value.Trim()
+            })
+            .ToList();
 
-        var hasDuplicates = normalizedOptions
+        var hasDuplicatesInsideSameVariant = normalizedOptions
             .GroupBy(x => new
             {
                 x.OptionId,
-                Value = x.Value.ToLower()
+          Value = x.Value.ToLowerInvariant()
             })
             .Any(g => g.Count() > 1);
 
-        if (hasDuplicates)
+        if (hasDuplicatesInsideSameVariant)
         {
             throw new Lilys_CMConflictException("Duplicate options are not allowed on the same variant.");
         }
@@ -62,6 +65,12 @@ public sealed class UpdateProductVariantCommandHandler
             throw new Lilys_CMNotFoundException("One or more options were not found.");
         }
 
+        await EnsureVariantCombinationIsUniqueAsync(
+            request.ProductId,
+            ignoredVariantId: variant.Id,
+            normalizedOptions.Select(x => new VariantOptionInput(x.OptionId, x.Value)).ToList(),
+            cancellationToken);
+
         variant.Price = request.Price;
         variant.Stock = request.Stock;
 
@@ -77,7 +86,7 @@ public sealed class UpdateProductVariantCommandHandler
                 .FirstOrDefaultAsync(
                     x =>
                         x.OptionId == optionItem.OptionId &&
-                        x.Value.ToLower() == optionItem.Value.ToLower() &&
+                        x.Value.ToLowerInvariant() == optionItem.Value.ToLowerInvariant() &&
                         !x.IsDeleted,
                     cancellationToken);
 
@@ -101,6 +110,57 @@ public sealed class UpdateProductVariantCommandHandler
 
             _context.VariantOptionEntities.Add(variantOption);
         }
+
         await _context.SaveChangesAsync(cancellationToken);
     }
+
+    private async Task EnsureVariantCombinationIsUniqueAsync(
+        int productId,
+        int? ignoredVariantId,
+        List<VariantOptionInput> requestedOptions,
+        CancellationToken cancellationToken)
+    {
+        var requestedKey = BuildCombinationKey(requestedOptions);
+
+        var existingOptions = await _context.VariantOptionEntities
+            .Where(x =>
+                !x.IsDeleted &&
+                !x.OptionValue.IsDeleted &&
+                !x.Variant.IsDeleted &&
+                x.Variant.ProductId == productId &&
+                (!ignoredVariantId.HasValue || x.VariantId != ignoredVariantId.Value))
+            .Select(x => new
+            {
+                x.VariantId,
+                x.OptionValue.OptionId,
+                x.OptionValue.Value
+            })
+            .ToListAsync(cancellationToken);
+
+        var duplicateExists = existingOptions
+            .GroupBy(x => x.VariantId)
+            .Any(group =>
+            {
+                var existingKey = BuildCombinationKey(
+                    group.Select(x => new VariantOptionInput(x.OptionId, x.Value)).ToList());
+
+                return existingKey == requestedKey;
+            });
+
+        if (duplicateExists)
+        {
+            throw new Lilys_CMConflictException("A variant with the same option combination already exists for this product.");
+        }
+    }
+
+    private static string BuildCombinationKey(List<VariantOptionInput> options)
+    {
+        return string.Join(
+            "|",
+            options
+                .Select(x => $"{x.OptionId}:{x.Value.Trim().ToLowerInvariant()}")
+                .OrderBy(x => x));
+    }
+
+    private sealed record VariantOptionInput(int OptionId, string Value);
 }

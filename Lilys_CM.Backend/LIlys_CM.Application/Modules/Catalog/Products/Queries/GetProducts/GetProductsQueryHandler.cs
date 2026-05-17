@@ -2,6 +2,7 @@ using Lilys_CM.Application.Abstractions;
 using Lilys_CM.Application.Common;
 using Lilys_CM.Domain.Entities.Catalog;
 using Microsoft.EntityFrameworkCore;
+using System.Text.RegularExpressions;
 
 namespace Lilys_CM.Application.Modules.Catalog.Products.Queries.GetProducts;
 
@@ -78,12 +79,15 @@ public class GetProductsQueryHandler : IRequestHandler<GetProductsQuery, PageRes
                 p.Name.ToLower().Contains(search) ||
                 p.Sku.ToLower().Contains(search) ||
                 p.Slug.ToLower().Contains(search) ||
-                (p.BrandEntity != null && p.BrandEntity.Name.ToLower().Contains(search)) ||
-                (p.Brand != null && p.Brand.ToLower().Contains(search)) ||
-                (p.Subcategory != null && p.Subcategory.Name.ToLower().Contains(search)) ||
-                (p.Description != null && p.Description.ToLower().Contains(search)) ||
                 (p.ShortDescription != null && p.ShortDescription.ToLower().Contains(search)) ||
-                p.Category.Name.ToLower().Contains(search));
+                (p.Description != null && p.Description.ToLower().Contains(search)) ||
+                (p.Ingredients != null && p.Ingredients.ToLower().Contains(search)) ||
+                (p.Benefits != null && p.Benefits.ToLower().Contains(search)) ||
+                (p.SeoTitle != null && p.SeoTitle.ToLower().Contains(search)) ||
+                (p.SeoDescription != null && p.SeoDescription.ToLower().Contains(search)) ||
+                (p.BrandEntity != null && p.BrandEntity.Name.ToLower().Contains(search)) ||
+                (p.Category != null && p.Category.Name.ToLower().Contains(search)) ||
+                (p.Subcategory != null && p.Subcategory.Name.ToLower().Contains(search)));
         }
 
         var totalCount = await query.CountAsync(cancellationToken);
@@ -143,6 +147,28 @@ public class GetProductsQueryHandler : IRequestHandler<GetProductsQuery, PageRes
             Page = request.Paging.Page,
             PageSize = request.Paging.PageSize
         };
+    }
+
+    private static string? BuildFullTextSearchCondition(string? search)
+    {
+        if (string.IsNullOrWhiteSpace(search))
+        {
+            return null;
+        }
+
+        var words = Regex
+            .Matches(search.Trim(), @"[\p{L}\p{N}]+")
+            .Select(x => x.Value)
+            .Where(x => x.Length >= 2)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (words.Count == 0)
+        {
+            return null;
+        }
+
+        return string.Join(" AND ", words.Select(x => $"\"{x}*\""));
     }
 
     private static IQueryable<ProductEntity> ApplySorting(
